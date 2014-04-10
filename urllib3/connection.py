@@ -29,7 +29,7 @@ try: # Compiled with SSL?
     except ImportError:
         from httplib import HTTPSConnection as _HTTPSConnection
 
-    import ssl
+    import backports.ssl as ssl
     BaseSSLError = ssl.SSLError
 
 except (ImportError, AttributeError): # Platform-specific: No SSL.

@@ -1,5 +1,5 @@
 import logging
-import ssl
+import backports.ssl as ssl
 import sys
 import unittest
 

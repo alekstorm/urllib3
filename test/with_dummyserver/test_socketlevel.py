@@ -17,7 +17,7 @@ from nose.plugins.skip import SkipTest
 from threading import Event
 import socket
 import time
-import ssl
+import backports.ssl as ssl
 
 
 class TestCookies(SocketDummyServerTestCase):

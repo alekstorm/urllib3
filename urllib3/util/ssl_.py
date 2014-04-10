@@ -8,10 +8,10 @@ try:  # Test for SSL features
     SSLContext = None
     HAS_SNI = False
 
-    import ssl
-    from ssl import wrap_socket, CERT_NONE, PROTOCOL_SSLv23
-    from ssl import SSLContext  # Modern SSL?
-    from ssl import HAS_SNI  # Has SNI?
+    import backports.ssl as ssl
+    from backports.ssl import wrap_socket, CERT_NONE, PROTOCOL_SSLv23
+    from backports.ssl import SSLContext  # Modern SSL?
+    from backports.ssl import HAS_SNI  # Has SNI?
 except ImportError:
     pass
 

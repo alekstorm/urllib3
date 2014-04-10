@@ -16,7 +16,7 @@ from urllib3.exceptions import (
 )
 
 from socket import error as SocketError
-from ssl import SSLError as BaseSSLError
+from backports.ssl import SSLError as BaseSSLError
 
 try:   # Python 3
     from queue import Empty
