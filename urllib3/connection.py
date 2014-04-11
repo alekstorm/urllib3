@@ -18,19 +18,12 @@ class DummyConnection(object):
     pass
 
 try: # Compiled with SSL?
-    ssl = None
     HTTPSConnection = DummyConnection
-
-    class BaseSSLError(BaseException):
-        pass
 
     try: # Python 3
         from http.client import HTTPSConnection as _HTTPSConnection
     except ImportError:
         from httplib import HTTPSConnection as _HTTPSConnection
-
-    import ssl
-    BaseSSLError = ssl.SSLError
 
 except (ImportError, AttributeError): # Platform-specific: No SSL.
     pass
@@ -42,6 +35,7 @@ from .packages.ssl_match_hostname import match_hostname
 from .packages import six
 from .util import (
     assert_fingerprint,
+    base_ssl,
     resolve_cert_reqs,
     resolve_ssl_version,
     ssl_wrap_socket,
@@ -109,7 +103,7 @@ class HTTPSConnection(HTTPConnection):
 
     def __init__(self, host, port=None, key_file=None, cert_file=None,
                  strict=None, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
-                 source_address=None):
+                 source_address=None, ssl=base_ssl):
 
         HTTPConnection.__init__(self, host, port,
                                 strict=strict,
@@ -119,6 +113,8 @@ class HTTPSConnection(HTTPConnection):
         self.key_file = key_file
         self.cert_file = cert_file
 
+        self._ssl = ssl
+
         # Required property for Google AppEngine 1.9.0 which otherwise causes
         # HTTPS requests to go out as HTTP. (See Issue #356)
         self._protocol = 'https'
@@ -126,7 +122,7 @@ class HTTPSConnection(HTTPConnection):
     def connect(self):
         conn = self._new_conn()
         self._prepare_conn(conn)
-        self.sock = ssl.wrap_socket(conn, self.key_file, self.cert_file)
+        self.sock = self._ssl.wrap_socket(conn, self.key_file, self.cert_file)
 
 
 class VerifiedHTTPSConnection(HTTPSConnection):
@@ -164,8 +160,8 @@ class VerifiedHTTPSConnection(HTTPSConnection):
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY,
                         self.tcp_nodelay)
 
-        resolved_cert_reqs = resolve_cert_reqs(self.cert_reqs)
-        resolved_ssl_version = resolve_ssl_version(self.ssl_version)
+        resolved_cert_reqs = resolve_cert_reqs(self._ssl, self.cert_reqs)
+        resolved_ssl_version = resolve_ssl_version(self._ssl, self.ssl_version)
 
         # the _tunnel_host attribute was added in python 2.6.3 (via
         # http://hg.python.org/cpython/rev/0f57b30a152f) so pythons 2.6(0-2) do
@@ -178,13 +174,14 @@ class VerifiedHTTPSConnection(HTTPSConnection):
 
         # Wrap socket using verification with the root certs in
         # trusted_root_certs
-        self.sock = ssl_wrap_socket(sock, self.key_file, self.cert_file,
+        self.sock = ssl_wrap_socket(self._ssl, sock, self.key_file,
+                                    self.cert_file,
                                     cert_reqs=resolved_cert_reqs,
                                     ca_certs=self.ca_certs,
                                     server_hostname=self.host,
                                     ssl_version=resolved_ssl_version)
 
-        if resolved_cert_reqs != ssl.CERT_NONE:
+        if resolved_cert_reqs != self._ssl.CERT_NONE:
             if self.assert_fingerprint:
                 assert_fingerprint(self.sock.getpeercert(binary_form=True),
                                    self.assert_fingerprint)
@@ -193,7 +190,6 @@ class VerifiedHTTPSConnection(HTTPSConnection):
                                self.assert_hostname or self.host)
 
 
-if ssl:
-    # Make a copy for testing.
-    UnverifiedHTTPSConnection = HTTPSConnection
-    HTTPSConnection = VerifiedHTTPSConnection
+# Make a copy for testing.
+UnverifiedHTTPSConnection = HTTPSConnection
+HTTPSConnection = VerifiedHTTPSConnection

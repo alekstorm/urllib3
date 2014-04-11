@@ -1,5 +1,4 @@
 import logging
-import ssl
 import sys
 import unittest
 
@@ -9,7 +8,7 @@ from nose.plugins.skip import SkipTest
 from dummyserver.testcase import HTTPSDummyServerTestCase
 from dummyserver.server import DEFAULT_CA, DEFAULT_CA_BAD, DEFAULT_CERTS
 
-from test import requires_network
+from test import backports_ssl, requires_network
 
 from urllib3 import HTTPSConnectionPool
 import urllib3.connection
@@ -18,7 +17,7 @@ from urllib3.connection import (
     UnverifiedHTTPSConnection,
 )
 from urllib3.exceptions import SSLError, ConnectTimeoutError, ReadTimeoutError
-from urllib3.util import Timeout
+from urllib3.util import Timeout, base_ssl
 
 
 log = logging.getLogger('urllib3.connectionpool')
@@ -29,22 +28,27 @@ log.addHandler(logging.StreamHandler(sys.stdout))
 # Reset. SO suggests this hostname
 TARPIT_HOST = '10.255.255.1'
 
-class TestHTTPS(HTTPSDummyServerTestCase):
+class HTTPSTestCase(HTTPSDummyServerTestCase):
+    __test__ = False
+
     def setUp(self):
-        self._pool = HTTPSConnectionPool(self.host, self.port)
+        if self.ssl is None:
+            raise SkipTest('SSL implementation unavailable')
+        self._pool = HTTPSConnectionPool(self.host, self.port, ssl=self.ssl)
 
     def test_simple(self):
         r = self._pool.request('GET', '/')
         self.assertEqual(r.status, 200, r.data)
 
     def test_set_ssl_version_to_tlsv1(self):
-        self._pool.ssl_version = ssl.PROTOCOL_TLSv1
+        self._pool.ssl_version = self.ssl.PROTOCOL_TLSv1
         r = self._pool.request('GET', '/')
         self.assertEqual(r.status, 200, r.data)
 
     def test_verified(self):
         https_pool = HTTPSConnectionPool(self.host, self.port,
-                                         cert_reqs='CERT_REQUIRED')
+                                         cert_reqs='CERT_REQUIRED',
+                                         ssl=self.ssl)
 
         conn = https_pool._new_conn()
         self.assertEqual(conn.__class__, VerifiedHTTPSConnection)
@@ -65,7 +69,8 @@ class TestHTTPS(HTTPSDummyServerTestCase):
         https_pool.request('GET', '/')  # Should succeed without exceptions.
 
         https_fail_pool = HTTPSConnectionPool('127.0.0.1', self.port,
-                                              cert_reqs='CERT_REQUIRED')
+                                              cert_reqs='CERT_REQUIRED',
+                                              ssl=self.ssl)
         https_fail_pool.ca_certs = DEFAULT_CA
 
         try:
@@ -97,7 +102,8 @@ class TestHTTPS(HTTPSDummyServerTestCase):
 
     def test_cert_reqs_as_constant(self):
         https_pool = HTTPSConnectionPool(self.host, self.port,
-                                         cert_reqs=ssl.CERT_REQUIRED)
+                                         cert_reqs=self.ssl.CERT_REQUIRED,
+                                         ssl=self.ssl)
 
         https_pool.ca_certs = DEFAULT_CA_BAD
         # if we pass in an invalid value it defaults to CERT_NONE
@@ -105,7 +111,8 @@ class TestHTTPS(HTTPSDummyServerTestCase):
 
     def test_cert_reqs_as_short_string(self):
         https_pool = HTTPSConnectionPool(self.host, self.port,
-                                         cert_reqs='REQUIRED')
+                                         cert_reqs='REQUIRED',
+                                         ssl=self.ssl)
 
         https_pool.ca_certs = DEFAULT_CA_BAD
         # if we pass in an invalid value it defaults to CERT_NONE
@@ -113,7 +120,8 @@ class TestHTTPS(HTTPSDummyServerTestCase):
 
     def test_ssl_unverified_with_ca_certs(self):
         https_pool = HTTPSConnectionPool(self.host, self.port,
-                                         cert_reqs='CERT_NONE')
+                                         cert_reqs='CERT_NONE',
+                                         ssl=self.ssl)
 
         https_pool.ca_certs = DEFAULT_CA_BAD
         https_pool.request('GET', '/')
@@ -141,7 +149,7 @@ class TestHTTPS(HTTPSDummyServerTestCase):
                            'monkey patching')
 
         https_pool = HTTPSConnectionPool('httpbin.org', 443,
-                                         cert_reqs=ssl.CERT_REQUIRED)
+                                         cert_reqs=self.ssl.CERT_REQUIRED)
 
         https_pool.request('HEAD', '/')
 
@@ -305,15 +313,25 @@ class TestHTTPS(HTTPSDummyServerTestCase):
         https_pool._make_request(conn, 'GET', '/')
 
 
-class TestHTTPS_TLSv1(HTTPSDummyServerTestCase):
+class TestHTTPSBaseSSL(HTTPSTestCase):
+    __test__ = True
+    ssl = base_ssl
+
+class TestHTTPSBackportsSSL(HTTPSTestCase):
+    __test__ = True
+    ssl = backports_ssl
+
+
+class HTTPS_TLSv1Case(HTTPSDummyServerTestCase):
+    __test__ = False
     certs = DEFAULT_CERTS.copy()
-    certs['ssl_version'] = ssl.PROTOCOL_TLSv1
 
     def setUp(self):
         self._pool = HTTPSConnectionPool(self.host, self.port)
+        self.certs['ssl_version'] = self.ssl.PROTOCOL_TLSv1
 
     def test_set_ssl_version_to_sslv3(self):
-        self._pool.ssl_version = ssl.PROTOCOL_SSLv3
+        self._pool.ssl_version = self.ssl.PROTOCOL_SSLv3
         self.assertRaises(SSLError, self._pool.request, 'GET', '/')
 
     def test_ssl_version_as_string(self):
@@ -324,6 +342,14 @@ class TestHTTPS_TLSv1(HTTPSDummyServerTestCase):
         self._pool.ssl_version = 'SSLv3'
         self.assertRaises(SSLError, self._pool.request, 'GET', '/')
 
+
+class TestHTTPS_TLSv1BaseSSL(HTTPS_TLSv1Case):
+    __test__ = True
+    ssl = base_ssl
+
+#class TestHTTPS_TLSv1BaseSSL(HTTPS_TLSv1TestCase):
+#    __test__ = True
+#    ssl = backports_ssl
 
 if __name__ == '__main__':
     unittest.main()

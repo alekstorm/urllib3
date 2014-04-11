@@ -1,3 +1,4 @@
+from test import backports_ssl
 
 from urllib3 import HTTPConnectionPool, HTTPSConnectionPool
 from urllib3.poolmanager import proxy_from_url
@@ -17,7 +18,6 @@ from nose.plugins.skip import SkipTest
 from threading import Event
 import socket
 import time
-import ssl
 
 
 class TestCookies(SocketDummyServerTestCase):
@@ -42,10 +42,11 @@ class TestCookies(SocketDummyServerTestCase):
         self.assertEqual(r.headers, {'set-cookie': 'foo=1, bar=1'})
 
 
-class TestSNI(SocketDummyServerTestCase):
+class SNITestCase(SocketDummyServerTestCase):
+    __test__ = False
 
     def test_hostname_in_first_request_packet(self):
-        if not util.HAS_SNI:
+        if not getattr(self.ssl, 'HAS_SNI', None):
             raise SkipTest('SNI-support not available')
 
         done_receiving = Event()
@@ -59,7 +60,7 @@ class TestSNI(SocketDummyServerTestCase):
             sock.close()
 
         self._start_server(socket_handler)
-        pool = HTTPSConnectionPool(self.host, self.port)
+        pool = HTTPSConnectionPool(self.host, self.port, ssl=self.ssl)
         try:
             pool.request('GET', '/', retries=0)
         except SSLError: # We are violating the protocol
@@ -67,6 +68,15 @@ class TestSNI(SocketDummyServerTestCase):
         done_receiving.wait()
         self.assertTrue(self.host.encode() in self.buf,
                         "missing hostname in SSL handshake")
+
+
+class TestSNIBaseSSL(SNITestCase):
+    __test__ = True
+    ssl = util.base_ssl
+
+class TestSNIBackportsSSL(SNITestCase):
+    __test__ = True
+    ssl = backports_ssl
 
 
 class TestSocketClosing(SocketDummyServerTestCase):
@@ -278,13 +288,14 @@ class TestProxyManager(SocketDummyServerTestCase):
                 assert_same_host=False, retries=0)
 
 
-class TestSSL(SocketDummyServerTestCase):
+class SSLTestCase(SocketDummyServerTestCase):
+    __test__ = False
 
     def test_ssl_failure_midway_through_conn(self):
         def socket_handler(listener):
             sock = listener.accept()[0]
             sock2 = sock.dup()
-            ssl_sock = ssl.wrap_socket(sock,
+            ssl_sock = self.ssl.wrap_socket(sock,
                                        server_side=True,
                                        keyfile=DEFAULT_CERTS['keyfile'],
                                        certfile=DEFAULT_CERTS['certfile'],
@@ -304,6 +315,15 @@ class TestSSL(SocketDummyServerTestCase):
             ssl_sock.close()
 
         self._start_server(socket_handler)
-        pool = HTTPSConnectionPool(self.host, self.port)
+        pool = HTTPSConnectionPool(self.host, self.port, ssl=self.ssl)
 
         self.assertRaises(SSLError, pool.request, 'GET', '/', retries=0)
+
+
+class TestSSLBaseSSL(SSLTestCase):
+    __test__ = True
+    ssl = util.base_ssl
+
+class TestSSLBackportsSSL(SSLTestCase):
+    __test__ = True
+    ssl = backports_ssl

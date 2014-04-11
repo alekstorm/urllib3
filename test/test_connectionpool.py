@@ -1,11 +1,13 @@
 import unittest
 
+from test import backports_ssl
+
 from urllib3.connectionpool import (
     connection_from_url,
     HTTPConnection,
     HTTPConnectionPool,
 )
-from urllib3.util import Timeout
+from urllib3.util import Timeout, base_ssl
 from urllib3.packages.ssl_match_hostname import CertificateError
 from urllib3.exceptions import (
     ClosedPoolError,
@@ -16,7 +18,6 @@ from urllib3.exceptions import (
 )
 
 from socket import error as SocketError
-from ssl import SSLError as BaseSSLError
 
 try:   # Python 3
     from queue import Empty
@@ -26,11 +27,13 @@ except ImportError:
     from httplib import HTTPException
 
 
-class TestConnectionPool(unittest.TestCase):
+class ConnectionPoolTestCase(unittest.TestCase):
     """
     Tests in this suite should exercise the ConnectionPool functionality
     without actually making any network requests or connections.
     """
+    __test__ = False
+
     def test_same_host(self):
         same_host = [
             ('http://google.com/', '/'),
@@ -46,7 +49,7 @@ class TestConnectionPool(unittest.TestCase):
         ]
 
         for a, b in same_host:
-            c = connection_from_url(a)
+            c = connection_from_url(a, ssl=self.ssl)
             self.assertTrue(c.is_same_host(b), "%s =? %s" % (a, b))
 
         not_same_host = [
@@ -67,9 +70,9 @@ class TestConnectionPool(unittest.TestCase):
         ]
 
         for a, b in not_same_host:
-            c = connection_from_url(a)
+            c = connection_from_url(a, ssl=self.ssl)
             self.assertFalse(c.is_same_host(b), "%s =? %s" % (a, b))
-            c = connection_from_url(b)
+            c = connection_from_url(b, ssl=self.ssl)
             self.assertFalse(c.is_same_host(a), "%s =? %s" % (b, a))
 
 
@@ -145,7 +148,7 @@ class TestConnectionPool(unittest.TestCase):
 
         # Make sure that all of the exceptions return the connection to the pool
         _test(Empty, EmptyPoolError)
-        _test(BaseSSLError, SSLError)
+        _test(self.ssl.SSLError, SSLError)
         _test(CertificateError, SSLError)
 
         # The pool should never be empty, and with these two exceptions being raised,
@@ -158,13 +161,13 @@ class TestConnectionPool(unittest.TestCase):
         self.assertEqual(pool.pool.qsize(), POOL_SIZE)
 
     def test_assert_same_host(self):
-        c = connection_from_url('http://google.com:80')
+        c = connection_from_url('http://google.com:80', ssl=self.ssl)
 
         self.assertRaises(HostChangedError, c.request,
                           'GET', 'http://yahoo.com:80', assert_same_host=True)
 
     def test_pool_close(self):
-        pool = connection_from_url('http://google.com:80')
+        pool = connection_from_url('http://google.com:80', ssl=self.ssl)
 
         # Populate with some connections
         conn1 = pool._get_conn()
@@ -200,6 +203,16 @@ class TestConnectionPool(unittest.TestCase):
         self.assertEqual(pool.timeout._read, 3)
         self.assertEqual(pool.timeout._connect, 3)
         self.assertEqual(pool.timeout.total, None)
+
+
+class TestConnectionPoolBaseSSL(ConnectionPoolTestCase):
+    __test__ = True
+    ssl = base_ssl
+
+class TestConnectionPoolBackportsSSL(ConnectionPoolTestCase):
+    __test__ = True
+    # FIXME skip if missing
+    ssl = backports_ssl
 
 
 if __name__ == '__main__':

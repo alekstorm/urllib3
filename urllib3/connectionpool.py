@@ -36,11 +36,12 @@ from .connection import (
     port_by_scheme,
     DummyConnection,
     HTTPConnection, HTTPSConnection, VerifiedHTTPSConnection,
-    HTTPException, BaseSSLError,
+    HTTPException,
 )
 from .request import RequestMethods
 from .response import HTTPResponse
 from .util import (
+    base_ssl,
     get_host,
     is_connection_dropped,
     Timeout,
@@ -318,16 +319,6 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
             raise ReadTimeoutError(
                 self, url, "Read timed out. (read timeout=%s)" % read_timeout)
 
-        except BaseSSLError as e:
-            # Catch possible read timeouts thrown as SSL errors. If not the
-            # case, rethrow the original. We need to do this because of:
-            # http://bugs.python.org/issue10272
-            if 'timed out' in str(e) or \
-               'did not complete (read)' in str(e):  # Python 2.6
-                raise ReadTimeoutError(self, url, "Read timed out.")
-
-            raise
-
         except SocketError as e: # Platform-specific: Python 2
             # See the above comment about EAGAIN in Python 3. In Python 2 we
             # have to specifically catch it and throw the timeout error
@@ -379,6 +370,31 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
             port = None
 
         return (scheme, host, port) == (self.scheme, self.host, self.port)
+
+    def _foo(self, conn, method, url, timeout, body, headers, release_conn,
+             response_kw):
+        # Make the request on the httplib connection object
+        httplib_response = self._make_request(conn, method, url,
+                                              timeout=timeout,
+                                              body=body, headers=headers)
+
+        # If we're going to release the connection in ``finally:``, then
+        # the request doesn't need to know about the connection. Otherwise
+        # it will also try to release it and we'll have a double-release
+        # mess.
+        response_conn = not release_conn and conn
+
+        # Import httplib's response into our own wrapper object
+        return HTTPResponse.from_httplib(httplib_response,
+                                         pool=self,
+                                         connection=response_conn,
+                                         **response_kw)
+
+        # else:
+        #     The connection will be put back into the pool when
+        #     ``response.release_conn()`` is called (implicitly by
+        #     ``response.read()``)
+
 
     def urlopen(self, method, url, body=None, headers=None, retries=3,
                 redirect=True, assert_same_host=True, timeout=_Default,
@@ -482,37 +498,12 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
             # Request a connection from the queue
             conn = self._get_conn(timeout=pool_timeout)
 
-            # Make the request on the httplib connection object
-            httplib_response = self._make_request(conn, method, url,
-                                                  timeout=timeout,
-                                                  body=body, headers=headers)
-
-            # If we're going to release the connection in ``finally:``, then
-            # the request doesn't need to know about the connection. Otherwise
-            # it will also try to release it and we'll have a double-release
-            # mess.
-            response_conn = not release_conn and conn
-
-            # Import httplib's response into our own wrapper object
-            response = HTTPResponse.from_httplib(httplib_response,
-                                                 pool=self,
-                                                 connection=response_conn,
-                                                 **response_kw)
-
-            # else:
-            #     The connection will be put back into the pool when
-            #     ``response.release_conn()`` is called (implicitly by
-            #     ``response.read()``)
+            response = self._foo(conn, method, url, timeout, body, headers,
+                                 release_conn, response_kw)
 
         except Empty:
             # Timed out by queue.
             raise EmptyPoolError(self, "No pool connections are available.")
-
-        except (BaseSSLError, CertificateError) as e:
-            # Release connection unconditionally because there is no way to
-            # close it externally in case of exception.
-            release_conn = True
-            raise SSLError(e)
 
         except (TimeoutError, HTTPException, SocketError) as e:
             if conn:
@@ -597,7 +588,8 @@ class HTTPSConnectionPool(HTTPConnectionPool):
                  _proxy=None, _proxy_headers=None,
                  key_file=None, cert_file=None, cert_reqs=None,
                  ca_certs=None, ssl_version=None,
-                 assert_hostname=None, assert_fingerprint=None):
+                 assert_hostname=None, assert_fingerprint=None,
+                 ssl=base_ssl):
 
         HTTPConnectionPool.__init__(self, host, port, strict, timeout, maxsize,
                                     block, headers, _proxy, _proxy_headers)
@@ -608,6 +600,7 @@ class HTTPSConnectionPool(HTTPConnectionPool):
         self.ssl_version = ssl_version
         self.assert_hostname = assert_hostname
         self.assert_fingerprint = assert_fingerprint
+        self.ssl = ssl
 
     def _prepare_conn(self, conn):
         """
@@ -670,8 +663,40 @@ class HTTPSConnectionPool(HTTPConnectionPool):
 
         return self._prepare_conn(conn)
 
+    def _make_request(self, conn, method, url, timeout=_Default,
+                      **httplib_request_kw):
+        try:
+            return super(HTTPSConnectionPool, self)._make_request(
+                    conn, method, url, timeout, **httplib_request_kw)
 
-def connection_from_url(url, **kw):
+        except self.ssl.SSLError as e:
+            # Catch possible read timeouts thrown as SSL errors. If not the
+            # case, rethrow the original. We need to do this because of:
+            # http://bugs.python.org/issue10272
+            if 'timed out' in str(e) or \
+               'did not complete (read)' in str(e):  # Python 2.6
+                raise ReadTimeoutError(self, url, "Read timed out.")
+
+            raise
+
+    def _foo(self, conn, method, url, timeout, body, headers, release_conn,
+             response_kw):
+        try:
+            return super(HTTPSConnectionPool, self)._foo(conn, method, url,
+                                                         timeout, body, headers,
+                                                         release_conn,
+                                                         response_kw)
+
+        except (self.ssl.SSLError, CertificateError) as e:
+            # Release connection unconditionally because there is no way to
+            # close it externally in case of exception.
+            self._put_conn(conn)
+            raise SSLError(e)
+
+SSL_KEYWORDS = ('key_file', 'cert_file', 'cert_reqs', 'ca_certs',
+                'assert_hostname', 'assert_fingerprint', 'ssl_version', 'ssl')
+
+def connection_from_url(url, **kwargs):
     """
     Given a url, return an :class:`.ConnectionPool` instance of its host.
 
@@ -693,6 +718,8 @@ def connection_from_url(url, **kw):
     """
     scheme, host, port = get_host(url)
     if scheme == 'https':
-        return HTTPSConnectionPool(host, port=port, **kw)
+        return HTTPSConnectionPool(host, port=port, **kwargs)
     else:
-        return HTTPConnectionPool(host, port=port, **kw)
+        for kw in SSL_KEYWORDS:
+            kwargs.pop(kw, None)
+        return HTTPConnectionPool(host, port=port, **kwargs)
