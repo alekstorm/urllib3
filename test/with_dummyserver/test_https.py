@@ -146,16 +146,6 @@ class TestHTTPS(HTTPSDummyServerTestCase):
         This test assumes that httpbin.org uses a certificate signed by a well
         known Certificate Authority.
         """
-        try:
-            import urllib3.contrib.pyopenssl
-        except ImportError:
-            raise SkipTest('This test needs pyopenssl support')
-        if (urllib3.connection.ssl_wrap_socket is
-                urllib3.contrib.pyopenssl.orig_connection_ssl_wrap_socket):
-            # Not patched
-            raise SkipTest('This test should only be run after pyopenssl '
-                           'monkey patching')
-
         https_pool = HTTPSConnectionPool('httpbin.org', 443,
                                          cert_reqs=self.ssl.CERT_REQUIRED,
                                          ssl=self.ssl)
